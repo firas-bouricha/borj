@@ -49,6 +49,7 @@ Sur un portable avec 16 Go de RAM, Teams, VS Code, un navigateur, Docker et deux
 | **Profil labo** | Une touche passe Teams, Discord, Brave, Edge… en mode éco avant de lancer les VMs |
 | **VirtualBox** | Liste des VMs, démarrage sans fenêtre, pause, sauvegarde, arrêt ACPI, ballon mémoire |
 | **Santé** | Tous les disques (statut, usure, erreurs), CPU (erreurs matérielles WHEA), RAM (barrettes, slots libres, capacité max), avec un verdict : bonne santé / à surveiller / à remplacer |
+| **Volumes** | Occupation de chaque lecteur (C:, D:, USB, réseau) : orange au-dessus de 85 %, rouge au-dessus de 95 % |
 | **Alertes** | Notification Windows quand la RAM ou le commit dépasse 95 % |
 | **Historique** | CSV toutes les 5 s et journal des pics ≥ 85 % avec les applis responsables |
 
@@ -70,7 +71,7 @@ Sur un portable avec 16 Go de RAM, Teams, VS Code, un navigateur, Docker et deux
 
 ### Option 2 : compiler depuis les sources
 
-Prérequis : [Go 1.26+](https://go.dev/dl/).
+Prérequis : [Go 1.26.9+](https://go.dev/dl/).
 
 ```bash
 git clone https://github.com/firas-bouricha/borj.git
@@ -166,6 +167,31 @@ En attendant leur intégration dans BORJ, le dossier `scripts/` contient :
 | **Pas de températures** | Windows ne les expose pas de façon standard sur la plupart des portables |
 | **Exécutable non signé** | Avertissement SmartScreen au premier lancement (voir [Installation](#installation)) |
 
+## Sécurité
+
+BORJ est conçu pour **observer** la machine, pas pour la modifier.
+
+**Ce que BORJ ne fait jamais**
+- Aucune écriture dans le registre, les dossiers système ou les fichiers des applications
+- Aucune connexion réseau : pas de télémétrie, pas de mise à jour automatique
+- Aucun service ni pilote installé, rien qui se lance au démarrage
+
+**Seul dossier écrit** : `%LOCALAPPDATA%\Borj` (historique CSV et journal des pics). Les CSV de plus de 30 jours sont supprimés automatiquement.
+
+**Actions possibles, toutes déclenchées par l'utilisateur**
+
+| Action | Garde-fous |
+|---|---|
+| Arrêter un processus (`x`) | Confirmation obligatoire. Processus vitaux de Windows refusés (lsass, csrss, winlogon, services, svchost, Defender, Windows Update, installeur MSI…). Processus de VM refusés : on passe par l'onglet VMs. Vérification de l'heure de création : un numéro de processus (PID) réutilisé par un autre programme n'est jamais visé |
+| Mode éco (`e`, `L`) | Change seulement la priorité et le mode EcoQoS. La priorité d'origine est rendue en quittant BORJ |
+| VMs (`s` `p` `v` `a` `+` `-`) | Passe par `VBoxManage`. L'arrêt demande une confirmation et reste propre (bouton ACPI) |
+
+**Programmes lancés** : PowerShell (santé et notifications, via son chemin absolu dans `System32`), `VBoxManage` (uniquement depuis le dossier d'installation de VirtualBox) et l'Explorateur (touche `o`). Jamais via le `PATH`.
+
+**Dépendances** : analysées avec [`govulncheck`](https://go.dev/doc/security/vuln/). Les tests (`go test`) vérifient les protections ci-dessus à chaque push.
+
+> Note : l'analyse santé passe par `powershell -EncodedCommand`, une forme que certains antivirus d'entreprise surveillent. C'est volontaire : le script est intégré au programme et n'est jamais écrit sur le disque, donc aucun autre programme ne peut le modifier.
+
 ## Technologies
 
 | | |
@@ -192,7 +218,8 @@ ui.go           rendu
 ## Feuille de route
 
 - [ ] Graphiques haute résolution (braille) par cœur CPU
-- [ ] Courbe du pagefile et occupation de tous les volumes
+- [x] Occupation de tous les volumes
+- [ ] Courbe du pagefile
 - [ ] Section WSL et Docker
 - [ ] Connexions réseau par application
 - [ ] Mode arrière-plan (historique et alertes sans interface)
