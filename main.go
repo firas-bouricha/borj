@@ -25,6 +25,8 @@ const (
 	tabApps = iota
 	tabVMs
 	tabHist
+	tabNet
+	tabCount
 )
 
 // Apps bridées par le profil labo (avant de lancer des VMs).
@@ -45,6 +47,25 @@ type vmListMsg struct {
 type volMsg []Volume
 
 func loadVolumes() tea.Cmd { return func() tea.Msg { return volMsg(listVolumes()) } }
+
+type netMsg struct {
+	socks  []Socket
+	ifaces []Iface
+}
+
+func loadNet() tea.Cmd { return func() tea.Msg { return netMsg{listSockets(), listIfaces()} } }
+
+type pubMsg struct {
+	ip  string
+	err error
+}
+
+func loadPublicIP() tea.Cmd {
+	return func() tea.Msg {
+		ip, err := publicIP()
+		return pubMsg{ip, err}
+	}
+}
 
 type vmActMsg struct {
 	text string
@@ -98,6 +119,17 @@ type model struct {
 	vmAt     time.Time
 	vmCursor int
 	vmSel    string
+
+	// réseau (lu toutes les 3 s, seulement quand l'onglet est ouvert)
+	socks   []Socket
+	ifaces  []Iface
+	netBusy bool
+	netAt   time.Time
+	pubIP   string
+	pubErr  error
+	pubBusy bool
+	pubShow bool // IP publique affichée en clair (masquée par défaut)
+	netOff  int  // défilement de la liste des ports
 
 	// volumes (rafraîchis toutes les 30 s)
 	vols    []Volume
@@ -458,14 +490,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			m.restoreEco()
 			return m, tea.Quit
-		case "tab":
-			m.tab = (m.tab + 1) % 3
-			return m, nil
-		case "shift+tab":
-			m.tab = (m.tab + 2) % 3
-			return m, nil
-		case "1", "2", "3":
-			m.tab = int(k[0] - '1')
+		case "tab", "shift+tab", "1", "2", "3", "4":
+			switch k {
+			case "tab":
+				m.tab = (m.tab + 1) % tabCount
+			case "shift+tab":
+				m.tab = (m.tab + tabCount - 1) % tabCount
+			default:
+				m.tab = int(k[0] - '1')
+			}
+			if m.tab == tabNet && !m.netBusy {
+				m.netBusy = true
+				return m, loadNet()
+			}
 			return m, nil
 		case "L":
 			m.labOn = !m.labOn
@@ -491,6 +528,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.tab {
 		case tabVMs:
 			return m, m.vmKey(k)
+		case tabNet:
+			switch k {
+			case "up", "k":
+				m.netOff = max(0, m.netOff-1)
+			case "down", "j":
+				m.netOff++
+			case "pgup":
+				m.netOff = max(0, m.netOff-10)
+			case "pgdown":
+				m.netOff += 10
+			case "home", "g":
+				m.netOff = 0
+			case "i":
+				if !m.pubBusy {
+					m.pubBusy, m.pubErr = true, nil
+					m.say("Demande de l'IP publique à Cloudflare (1.1.1.1)…")
+					return m, loadPublicIP()
+				}
+			case "v":
+				if m.pubIP == "" {
+					m.say("Appuie d'abord sur i pour récupérer l'IP publique.")
+				} else {
+					m.pubShow = !m.pubShow
+				}
+			}
+			return m, nil
 		case tabHist:
 			if k == "o" {
 				_ = exec.Command(systemExe("explorer.exe"), m.rec.dir).Start()
@@ -598,6 +661,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.volBusy = true
 			cmds = append(cmds, loadVolumes())
 		}
+		if m.tab == tabNet && !m.netBusy && time.Since(m.netAt) > 3*time.Second {
+			m.netBusy = true
+			cmds = append(cmds, loadNet())
+		}
 		if vboxManage != "" && !m.vmBusy && time.Since(m.vmAt) > 15*time.Second {
 			m.vmBusy = true
 			cmds = append(cmds, loadVMs())
@@ -612,6 +679,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case volMsg:
 		m.vols, m.volBusy, m.volAt = msg, false, time.Now()
+
+	case netMsg:
+		m.socks, m.ifaces, m.netBusy, m.netAt = msg.socks, msg.ifaces, false, time.Now()
+
+	case pubMsg:
+		m.pubBusy, m.pubErr = false, msg.err
+		if msg.err == nil {
+			m.pubIP = msg.ip
+			m.say("IP publique récupérée (masquée : v pour l'afficher).")
+		} else {
+			m.sayBad("IP publique : " + msg.err.Error())
+		}
 
 	case vmListMsg:
 		m.vmBusy, m.vmErr, m.vmAt = false, msg.err, time.Now()
@@ -671,6 +750,7 @@ func main() {
 		m.health, m.hErr = collectHealth()
 		m.hBusy = false
 		m.vols = listVolumes()
+		m.socks, m.ifaces = listSockets(), listIfaces()
 		if vboxManage != "" {
 			m.vms, m.vmErr = listVMs()
 		}

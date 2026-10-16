@@ -655,7 +655,7 @@ var helpHist = []help{
 }
 
 var helpGlobal = []help{
-	{"Tab", "Changer d'onglet", "ou 1 · 2 · 3"},
+	{"Tab", "Changer d'onglet", "ou 1 · 2 · 3 · 4"},
 	{"L", "Profil labo", "mode éco sur Teams, Discord, Brave, Edge… avant tes VMs"},
 	{"r", "Santé", "relancer l'analyse SSD / CPU / RAM"},
 	{"q", "Quitter", ""},
@@ -683,8 +683,8 @@ func (m model) sidebar(w, h int) string {
 		return fg(c).Bold(true).Render(t) + " " + fg(cBorder).Render(strings.Repeat("─", max(0, inner-lipgloss.Width(t)-1)))
 	}
 
-	tabName := []string{"APPLICATIONS", "MACHINES VIRTUELLES", "HISTORIQUE"}[m.tab]
-	items := [][]help{helpApps, helpVMs, helpHist}[m.tab]
+	tabName := []string{"APPLICATIONS", "MACHINES VIRTUELLES", "HISTORIQUE", "RÉSEAU"}[m.tab]
+	items := [][]help{helpApps, helpVMs, helpHist, helpNet}[m.tab]
 
 	var lines []string
 	lines = append(lines, section("ONGLET "+tabName, cAccent))
@@ -803,7 +803,7 @@ func (m model) statusLine(W int, withKeys bool) string {
 }
 
 func (m model) tabs() string {
-	names := []string{"1 APPLICATIONS", "2 MACHINES VIRTUELLES", "3 HISTORIQUE"}
+	names := []string{"1 APPLICATIONS", "2 MACHINES VIRTUELLES", "3 HISTORIQUE", "4 RÉSEAU"}
 	var parts []string
 	for i, n := range names {
 		if i == m.tab {
@@ -880,6 +880,11 @@ func (m model) View() string {
 		}
 	case tabHist:
 		body = m.histBody(mw, n+1)
+	case tabNet:
+		body = m.netBody(mw, n+1)
+		if m.netBusy && len(m.ifaces) == 0 {
+			right = fg(cCyan).Render("⟳ lecture…")
+		}
 	}
 	mid := panel(m.tabs(), right, strings.Join(body, "\n"), mw, midH, cTitle)
 

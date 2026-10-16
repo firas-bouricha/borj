@@ -50,6 +50,7 @@ Sur un portable avec 16 Go de RAM, Teams, VS Code, un navigateur, Docker et deux
 | **VirtualBox** | Liste des VMs, démarrage sans fenêtre, pause, sauvegarde, arrêt ACPI, ballon mémoire |
 | **Santé** | Tous les disques (statut, usure, erreurs), CPU (erreurs matérielles WHEA), RAM (barrettes, slots libres, capacité max), avec un verdict : bonne santé / à surveiller / à remplacer |
 | **Volumes** | Occupation de chaque lecteur (C:, D:, USB, réseau) : orange au-dessus de 85 %, rouge au-dessus de 95 % |
+| **Réseau** | IP privées par carte, IP publique à la demande (masquée), ports ouverts par application (exposé / local), connexions actives |
 | **Alertes** | Notification Windows quand la RAM ou le commit dépasse 95 % |
 | **Historique** | CSV toutes les 5 s et journal des pics ≥ 85 % avec les applis responsables |
 
@@ -99,13 +100,13 @@ Conseil : utilise **Windows Terminal** en plein écran. L'affichage s'adapte à 
 
 ## Utiliser les fonctionnalités
 
-BORJ a trois onglets : `Tab` passe de l'un à l'autre, ou utilise `1`, `2`, `3`. La colonne de droite rappelle toujours les touches de l'onglet ouvert.
+BORJ a quatre onglets : `Tab` passe de l'un à l'autre, ou utilise `1`, `2`, `3`, `4`. La colonne de droite rappelle toujours les touches de l'onglet ouvert.
 
 ### Partout
 
 | Touche | Action |
 |---|---|
-| `Tab` / `1` `2` `3` | Changer d'onglet |
+| `Tab` / `1` `2` `3` `4` | Changer d'onglet |
 | `L` | **Profil labo** : met Teams, Discord, Brave, Edge, OneDrive et Google Drive en mode éco. À utiliser avant de lancer des VMs. Appuie à nouveau pour annuler |
 | `r` | Relancer l'analyse santé (faite automatiquement toutes les 5 min) |
 | `q` | Quitter |
@@ -141,6 +142,18 @@ Le résumé en haut indique la RAM réservée par les VMs allumées et le nombre
 - Liste des **pics ≥ 85 %**, avec l'heure et les applications responsables.
 - `o` ouvre le dossier des journaux : `%LOCALAPPDATA%\Borj` (un CSV par jour et `pics.log`).
 
+### 4 · Réseau
+
+| Touche | Action |
+|---|---|
+| `i` | Demander l'**IP publique** à Cloudflare (`1.1.1.1`). C'est la seule requête Internet de BORJ, et elle ne part que sur cette touche |
+| `v` | Afficher ou masquer l'IP publique (masquée par défaut : `85.169.•••.•••`) |
+| `↑` `↓` | Faire défiler les ports ouverts |
+
+- **Mes adresses** : IP privée de chaque carte avec un nom clair (Wi-Fi, Ethernet, VirtualBox, WSL / Docker, VMware, Tailscale, VPN) et la passerelle.
+- **Ports ouverts** : chaque port en écoute, son service (SSH, SMB, PostgreSQL…) et l'application propriétaire. ● rouge = **exposé** (écoute sur le réseau ; le pare-feu Windows peut encore bloquer), ● vert = **local uniquement**.
+- **Connexions actives** : connexions établies regroupées par application, avec leurs adresses distantes principales.
+
 ### Alertes
 
 Quand la RAM ou le commit dépasse **95 %**, BORJ envoie une notification Windows et affiche un bandeau rouge. L'alerte se réarme quand la valeur redescend sous 90 %.
@@ -173,7 +186,7 @@ BORJ est conçu pour **observer** la machine, pas pour la modifier.
 
 **Ce que BORJ ne fait jamais**
 - Aucune écriture dans le registre, les dossiers système ou les fichiers des applications
-- Aucune connexion réseau : pas de télémétrie, pas de mise à jour automatique
+- Aucune connexion réseau automatique : pas de télémétrie, pas de mise à jour. Seule exception, l'IP publique, demandée à Cloudflare (`1.1.1.1`) **uniquement** quand tu appuies sur `i`
 - Aucun service ni pilote installé, rien qui se lance au démarrage
 
 **Seul dossier écrit** : `%LOCALAPPDATA%\Borj` (historique CSV et journal des pics). Les CSV de plus de 30 jours sont supprimés automatiquement.
@@ -212,7 +225,8 @@ health.go       santé disques / CPU / RAM
 vbox.go         pilotage de VirtualBox
 alerts.go       seuils et notifications Windows
 history.go      CSV et journal des pics
-ui.go           rendu
+net.go          réseau : adresses, ports, connexions, IP publique
+ui.go           rendu (ui_net.go : onglet Réseau)
 ```
 
 ## Feuille de route
@@ -221,7 +235,7 @@ ui.go           rendu
 - [x] Occupation de tous les volumes
 - [ ] Courbe du pagefile
 - [ ] Section WSL et Docker
-- [ ] Connexions réseau par application
+- [x] Onglet Réseau : adresses, ports ouverts, connexions par application
 - [ ] Mode arrière-plan (historique et alertes sans interface)
 - [ ] Onglet Optimisation (remplace `optimize-memory.ps1`)
 - [ ] Interface en anglais
