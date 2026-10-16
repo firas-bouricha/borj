@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main, preprod]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build -ldflags "-s -w" -o borj.exe .
+
+      - name: Smoke test
+        run: ./borj.exe -version
