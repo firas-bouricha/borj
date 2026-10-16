@@ -493,24 +493,39 @@ func (m model) ssdCard(w int) (string, lipgloss.Color, []string) {
 	if h == nil || len(h.Disks) == 0 {
 		return "", cBorder, []string{sDim.Render("analyse en cours…")}
 	}
-	d := h.Disks[0]
 	inner := w - 4
-	status := map[string]string{"Healthy": "Sain", "Warning": "Avertissement", "Unhealthy": "Défaillant"}[d.Health]
-	lines := []string{
-		sText.Bold(true).Render(trunc(d.Model, inner)),
-		kv("Capacité", sText.Render(fmt.Sprintf("%d Go · %s · %s", d.SizeGB, d.Bus, status))),
-	}
-	if d.Wear >= 0 {
+	worst := 0
+	var lines []string
+	// tous les disques physiques ; le verdict de la carte = le pire disque
+	for _, d := range h.Disks {
+		worst = max(worst, d.Level())
+		status := map[string]string{"Healthy": "Sain", "Warning": "Avertissement", "Unhealthy": "Défaillant"}[d.Health]
+		if status == "" {
+			status = d.Health
+		}
+		media := d.Media
+		if media == "" || media == "Unspecified" {
+			media = "Disque"
+		}
 		lines = append(lines,
-			kv("Usure", bar(float64(d.Wear), inner-11-5)),
-			kv("Erreurs", sText.Render(fmt.Sprintf("%d non corrigée(s)", d.Errors))))
-	} else {
-		lines = append(lines, kv("Usure", fg(cWarn).Render("lancer en admin pour la voir")))
+			fg(levelColor(float64(d.Level())*45+40)).Render("● ")+sText.Bold(true).Render(trunc(d.Model, inner-2)),
+			kv("  Type", sText.Render(fmt.Sprintf("%s · %s · %d Go · %s", media, d.Bus, d.SizeGB, status))))
+		switch {
+		case d.Wear >= 0:
+			lines = append(lines, kv("  Usure", bar(float64(d.Wear), inner-11-5)))
+			if d.Errors > 0 {
+				lines = append(lines, kv("  Erreurs", fg(cWarn).Render(fmt.Sprintf("%d non corrigée(s)", d.Errors))))
+			}
+		case !h.Admin:
+			lines = append(lines, kv("  Usure", fg(cWarn).Render("lancer en admin pour la voir")))
+		default:
+			lines = append(lines, kv("  Usure", sDim.Render("non fournie par ce disque")))
+		}
 	}
 	lines = append(lines,
 		kv("Espace "+h.Sys.Drive, bar(h.Sys.UsedPct, inner-11-5)),
 		kv("", fg(levelColor(h.Sys.UsedPct)).Render(fmt.Sprintf("%.0f Go libres", h.Sys.FreeGB))))
-	v, c := verdict(d.Level())
+	v, c := verdict(worst)
 	return v, c, lines
 }
 
@@ -700,7 +715,7 @@ func maxLines(ls ...[]string) int {
 }
 
 func (m model) header(W int) string {
-	logo := lipgloss.NewStyle().Background(cAccent).Foreground(cBg).Bold(true).Render(" ◆ BORJ ")
+	logo := lipgloss.NewStyle().Background(cAccent).Foreground(cBg).Bold(true).Render(" ◆ BORJ ") + sDim.Render(" "+version)
 	ram := m.snap.MemUsedPct()
 	chips := []string{
 		pill(fmt.Sprintf("RAM %.0f%%", ram), levelColor(ram)),
@@ -796,7 +811,7 @@ func (m model) View() string {
 		v3, c3, l3 := m.ramCard(c)
 		hh := maxLines(l1, l2, l3) + 3
 		health = lipgloss.JoinHorizontal(lipgloss.Top,
-			panel(title("◈", "SANTÉ SSD", c1), v1, strings.Join(l1, "\n"), a, hh, c1),
+			panel(title("◈", "SANTÉ DISQUES", c1), v1, strings.Join(l1, "\n"), a, hh, c1),
 			panel(title("◈", "SANTÉ CPU", c2), v2, strings.Join(l2, "\n"), b, hh, c2),
 			panel(title("◈", "SANTÉ RAM", c3), v3, strings.Join(l3, "\n"), c, hh, c3))
 	} else {
@@ -808,7 +823,7 @@ func (m model) View() string {
 			panel(title("▤", "MÉMOIRE", cAccent), "", strings.Join(m.ramBody(mw), "\n"), mw, 0, cAccent),
 			panel(title("⇅", "RÉSEAU & DISQUE", cBlue), "", strings.Join(m.ioBody(mw), "\n"), mw, 0, cBlue))
 		health = lipgloss.JoinVertical(lipgloss.Left,
-			panel(title("◈", "SANTÉ SSD", c1), v1, strings.Join(l1, "\n"), mw, 0, c1),
+			panel(title("◈", "SANTÉ DISQUES", c1), v1, strings.Join(l1, "\n"), mw, 0, c1),
 			panel(title("◈", "SANTÉ CPU", c2), v2, strings.Join(l2, "\n"), mw, 0, c2),
 			panel(title("◈", "SANTÉ RAM", c3), v3, strings.Join(l3, "\n"), mw, 0, c3))
 	}

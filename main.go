@@ -18,6 +18,9 @@ import (
 
 const histLen = 300
 
+// version : injectée à la compilation (-ldflags "-X main.version=v0.1.0")
+var version = "dev"
+
 const (
 	tabApps = iota
 	tabVMs
@@ -582,7 +585,13 @@ func main() {
 	h := flag.Int("h", 50, "hauteur pour -once")
 	tab := flag.Int("tab", 1, "onglet pour -once (1 applis, 2 VMs, 3 historique)")
 	noColor := flag.Bool("nocolor", false, "désactive les couleurs")
+	showVersion := flag.Bool("version", false, "affiche la version")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("borj", version)
+		return
+	}
 
 	// Couleurs forcées : NO_COLOR / CI hérités d'un shell parent les coupaient sans raison.
 	if !*noColor {

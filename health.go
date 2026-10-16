@@ -19,6 +19,7 @@ type Disk struct {
 	Model  string `json:"model"`
 	SizeGB int    `json:"sizeGB"`
 	Bus    string `json:"bus"`
+	Media  string `json:"media"` // SSD, HDD, Unspecified
 	Health string `json:"health"`
 	Wear   int    `json:"wear"`   // % usure NVMe, -1 = inconnu (admin requis)
 	Errors int    `json:"errors"` // erreurs lecture/écriture non corrigées, -1 = inconnu
@@ -74,6 +75,7 @@ $disks=@(Get-PhysicalDisk | ForEach-Object {
     model=("$($_.FriendlyName)" -replace '\s+',' ').Trim()
     sizeGB=[int]($_.Size/1GB)
     bus="$($_.BusType)"
+    media="$($_.MediaType)"
     health="$($_.HealthStatus)"
     wear=$(if($rc -and $null -ne $rc.Wear){[int]$rc.Wear}else{-1})
     errors=$(if($rc){[int]$rc.ReadErrorsUncorrected+[int]$rc.WriteErrorsUncorrected}else{-1})
