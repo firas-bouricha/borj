@@ -1,0 +1,35 @@
+// A fusionner dans settings.json utilisateur (Ctrl+Shift+P > "Open User Settings (JSON)")
+{
+    // File watcher : principal consommateur CPU/RAM sur gros repos
+    "files.watcherExclude": {
+        "**/.git/objects/**": true,
+        "**/.git/subtree-cache/**": true,
+        "**/node_modules/**": true,
+        "**/dist/**": true,
+        "**/build/**": true,
+        "**/.venv/**": true,
+        "**/__pycache__/**": true
+    },
+    "search.exclude": { "**/node_modules": true, "**/dist": true, "**/.venv": true },
+    "search.followSymlinks": false,
+
+    // tsserver : plafond heap (Mo)
+    "typescript.tsserver.maxTsServerMemory": 1536,
+    "typescript.disableAutomaticTypeAcquisition": true,
+
+    // Extensions : pas d'auto-update en fond, pas de reco
+    "extensions.autoUpdate": false,
+    "extensions.ignoreRecommendations": true,
+
+    // Telemetrie + features gourmandes
+    "telemetry.telemetryLevel": "off",
+    "workbench.enableExperiments": false,
+    "editor.minimap.enabled": false,
+    "git.autorefresh": true,
+    "git.autofetch": false,
+    "workbench.editor.limit.enabled": true,
+    "workbench.editor.limit.value": 8
+
+    // Profils : Ctrl+Shift+P > "Profiles: Create Profile" (ex. "Infra", "Go", "Light")
+    // -> chaque profil n'active que ses extensions = moins de process extension host.
+}

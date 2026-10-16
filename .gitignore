@@ -1,0 +1,9 @@
+# Binaires
+*.exe
+*.exe~
+/dist/
+
+# Environnement local
+.claude/
+.vscode/
+*.log

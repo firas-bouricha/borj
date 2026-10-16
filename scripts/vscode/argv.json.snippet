@@ -1,0 +1,11 @@
+// A fusionner dans %USERPROFILE%\.vscode\argv.json (Ctrl+Shift+P > "Configure Runtime Arguments")
+// Ne pas ecraser le fichier : garder "crash-reporter-id" existant.
+{
+    // Plafonne le heap V8 de l'extension host / renderer (Mo)
+    "js-flags": "--max-old-space-size=2048",
+
+    // Garder l'acceleration GPU : la desactiver deplace le rendu sur CPU (pire sur i5 4C).
+    "disable-hardware-acceleration": false,
+
+    "enable-crash-reporter": false
+}
