@@ -6,7 +6,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -57,11 +59,6 @@ type Health struct {
 		DiagID   int     `json:"diagId"` // 1201 = OK, 1202 = erreurs, 0 = jamais testée
 		DiagDate string  `json:"diagDate"`
 	} `json:"ram"`
-	Sys struct {
-		Drive   string  `json:"drive"`
-		FreeGB  float64 `json:"freeGB"`
-		UsedPct float64 `json:"usedPct"`
-	} `json:"sys"`
 }
 
 const healthScript = `
@@ -90,7 +87,6 @@ $sticks=@(Get-CimInstance Win32_PhysicalMemory | ForEach-Object {
   [ordered]@{loc="$($_.DeviceLocator)";gb=[int]($_.Capacity/1GB);type=$t;speed=[int]$_.Speed;part="$($_.PartNumber)".Trim()}
 })
 $diag=Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-MemoryDiagnostics-Results'} -MaxEvents 1
-$d=Get-PSDrive -Name $env:SystemDrive.TrimEnd(':')
 [ordered]@{
   admin=$admin
   model="$((Get-CimInstance Win32_ComputerSystem).Model)"
@@ -98,7 +94,6 @@ $d=Get-PSDrive -Name $env:SystemDrive.TrimEnd(':')
   cpu=[ordered]@{name="$($p.Name)";cores=[int]$p.NumberOfCores;threads=[int]$p.NumberOfLogicalProcessors;status="$($p.Status)"}
   whea=[ordered]@{mem=@($ev|Where-Object{$_.Id -eq 47}).Count;cpu=@($ev|Where-Object{$_.Id -in 17,19}).Count;fatal=@($ev|Where-Object{$_.Id -in 18,20}).Count}
   ram=[ordered]@{slots=[int]$arr.MemoryDevices;maxGB=[int]($max/1MB);sticks=$sticks;diagId=$(if($diag){[int]$diag.Id}else{0});diagDate=$(if($diag){$diag.TimeCreated.ToString('dd/MM/yy')}else{''})}
-  sys=[ordered]@{drive="$env:SystemDrive";freeGB=[math]::Round($d.Free/1GB,1);usedPct=[math]::Round(100*$d.Used/($d.Used+$d.Free),1)}
 } | ConvertTo-Json -Depth 5 -Compress
 `
 
@@ -111,8 +106,22 @@ func encodePS(script string) string {
 	return base64.StdEncoding.EncodeToString(b)
 }
 
+// systemExe : chemin absolu dans %SystemRoot%, pour ne jamais lancer un exécutable homonyme
+// placé plus tôt dans le PATH (détournement de PATH).
+func systemExe(rel string) string {
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		root = `C:\Windows`
+	}
+	return filepath.Join(root, rel)
+}
+
+var powershellExe = systemExe(`System32\WindowsPowerShell\v1.0\powershell.exe`)
+
+// Script passé en -EncodedCommand plutôt qu'en fichier .ps1 : aucun fichier modifiable par un
+// autre programme n'est exécuté (important quand BORJ tourne en administrateur).
 func collectHealth() (*Health, error) {
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+	cmd := exec.Command(powershellExe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
 		"-EncodedCommand", encodePS(healthScript))
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000} // CREATE_NO_WINDOW
 	out, err := cmd.Output()

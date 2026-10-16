@@ -15,6 +15,7 @@ const (
 	histEvery = 5 * time.Second
 	longLen   = 720 // 1 h à 5 s
 	peakKeep  = 50
+	keepDays  = 30 // rétention des CSV
 )
 
 type point struct{ cpu, ram, commit float64 }
@@ -40,6 +41,7 @@ func newRecorder() *recorder {
 	}
 	r := &recorder{dir: filepath.Join(base, "Borj")}
 	_ = os.MkdirAll(r.dir, 0o755)
+	r.prune()
 	if f, err := os.Open(r.peaksPath()); err == nil {
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
@@ -54,6 +56,18 @@ func newRecorder() *recorder {
 }
 
 func (r *recorder) peaksPath() string { return filepath.Join(r.dir, "pics.log") }
+
+// prune : supprime les CSV de plus de 30 jours (~2 Mo par jour d'utilisation).
+// Ne touche qu'aux fichiers historique-*.csv du dossier de BORJ.
+func (r *recorder) prune() {
+	files, _ := filepath.Glob(filepath.Join(r.dir, "historique-*.csv"))
+	limit := time.Now().AddDate(0, 0, -keepDays)
+	for _, f := range files {
+		if st, err := os.Stat(f); err == nil && st.Mode().IsRegular() && st.ModTime().Before(limit) {
+			_ = os.Remove(f)
+		}
+	}
+}
 
 func (r *recorder) appendLine(path, header, line string) {
 	_, statErr := os.Stat(path)

@@ -42,6 +42,10 @@ type vmListMsg struct {
 	err error
 }
 
+type volMsg []Volume
+
+func loadVolumes() tea.Cmd { return func() tea.Msg { return volMsg(listVolumes()) } }
+
 type vmActMsg struct {
 	text string
 	err  error
@@ -95,12 +99,19 @@ type model struct {
 	vmCursor int
 	vmSel    string
 
+	// volumes (rafraîchis toutes les 30 s)
+	vols    []Volume
+	volBusy bool
+	volAt   time.Time
+
 	alert alerter
 	rec   *recorder
 
 	flash    string
 	flashBad bool
 	flashAt  time.Time
+
+	dry bool // -once : ni notification, ni écriture d'historique
 }
 
 func tick() tea.Cmd {
@@ -159,6 +170,9 @@ func (m *model) sample() {
 	m.diskHist = push(m.diskHist, snap.DiskRead+snap.DiskWrite)
 	m.applyEco()
 
+	if m.dry {
+		return
+	}
 	top := m.topApps(3)
 	if t, b := m.alert.check(snap, top); t != "" {
 		toast(t, b)
@@ -175,9 +189,21 @@ func (m *model) applyEco() {
 			continue
 		}
 		for _, p := range f.Members {
-			if !m.ecoDone[p.PID] && setEco(p.PID, true) == nil {
+			if ecoAllowed(p.Name) && !m.ecoDone[p.PID] && setEco(p.PID, true) == nil {
 				m.ecoDone[p.PID] = true
 			}
+		}
+	}
+}
+
+// ecoAllowed : jamais de bridage sur un processus système ou une VM.
+func ecoAllowed(name string) bool { return !isProtected(name) && !isVMProc(name) }
+
+// restoreEco : rend leur état d'origine à tous les processus bridés (appelé en quittant).
+func (m *model) restoreEco() {
+	for pid, on := range m.ecoDone {
+		if on {
+			_ = setEco(pid, false)
 		}
 	}
 }
@@ -191,6 +217,9 @@ func (m *model) setFamilyEco(name string, on bool) int {
 			continue
 		}
 		for _, p := range f.Members {
+			if !ecoAllowed(p.Name) {
+				continue
+			}
 			if setEco(p.PID, on) == nil {
 				n++
 			}
@@ -381,7 +410,7 @@ func (m *model) vmKey(k string) tea.Cmd {
 // ---------- Update ----------
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{tick(), loadHealth()}
+	cmds := []tea.Cmd{tick(), loadHealth(), loadVolumes()}
 	if vboxManage != "" {
 		cmds = append(cmds, loadVMs())
 	}
@@ -427,6 +456,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// touches globales
 		switch k {
 		case "q", "ctrl+c":
+			m.restoreEco()
 			return m, tea.Quit
 		case "tab":
 			m.tab = (m.tab + 1) % 3
@@ -463,7 +493,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.vmKey(k)
 		case tabHist:
 			if k == "o" {
-				_ = exec.Command("explorer.exe", m.rec.dir).Start()
+				_ = exec.Command(systemExe("explorer.exe"), m.rec.dir).Start()
 				m.say("Dossier ouvert : " + m.rec.dir)
 			}
 			return m, nil
@@ -504,29 +534,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			r := m.selected()
 			switch {
 			case r == nil:
+			case r.mem != nil && isVMProc(r.mem.Name):
+				m.sayBad("Refusé : c'est une machine virtuelle. Utilise l'onglet 2 (sauvegarder ou éteindre).")
 			case r.mem != nil && isProtected(r.mem.Name):
 				m.sayBad("Refusé : " + r.mem.Name + " est un processus système.")
 			case r.mem != nil:
-				pid, name := r.mem.PID, r.mem.Name
-				m.confirm = &pending{label: fmt.Sprintf("%s (PID %d)", name, pid), do: func(m *model) tea.Cmd {
-					ok, fail := killPIDs([]uint32{pid})
-					m.say(fmt.Sprintf("%s : %d arrêté, %d refusé", name, ok, fail))
+				ref, name := procRef{r.mem.PID, r.mem.Create}, r.mem.Name
+				m.confirm = &pending{label: fmt.Sprintf("%s (PID %d)", name, ref.PID), do: func(m *model) tea.Cmd {
+					ok, _ := killProcs([]procRef{ref})
+					if ok == 1 {
+						m.say(name + " arrêté.")
+					} else {
+						m.sayBad(name + " : refusé ou déjà fermé.")
+					}
 					return nil
 				}}
-			case isProtected(r.fam.Name) || r.fam.Name == "Services Windows" || r.fam.Name == "Affichage (dwm)" || r.fam.Name == "BORJ":
-				m.sayBad("Refusé : " + r.fam.Name + " est protégé.")
 			default:
-				pids, name, cnt := r.fam.PIDs(), r.fam.Name, r.fam.Count
-				m.confirm = &pending{label: fmt.Sprintf("%s (%d processus)", name, cnt), do: func(m *model) tea.Cmd {
-					ok, fail := killPIDs(pids)
-					m.say(fmt.Sprintf("%s : %d processus arrêté(s), %d refusé(s)", name, ok, fail))
-					return nil
-				}}
+				refs, skipped, hasVM := r.fam.Killable()
+				name := r.fam.Name
+				switch {
+				case hasVM:
+					m.sayBad("Refusé : " + name + " contient une machine virtuelle. Utilise l'onglet 2.")
+				case len(refs) == 0:
+					m.sayBad("Refusé : " + name + " ne contient que des processus système protégés.")
+				default:
+					label := fmt.Sprintf("%s (%d processus)", name, len(refs))
+					if skipped > 0 {
+						label += fmt.Sprintf(", %d processus système épargnés", skipped)
+					}
+					m.confirm = &pending{label: label, do: func(m *model) tea.Cmd {
+						ok, fail := killProcs(refs)
+						m.say(fmt.Sprintf("%s : %d processus arrêté(s), %d refusé(s) ou déjà fermé(s)", name, ok, fail))
+						return nil
+					}}
+				}
 			}
 		case "e":
 			if r := m.selected(); r != nil {
 				name := r.fam.Name
-				if isProtected(name) || name == "Services Windows" || name == "BORJ" {
+				if _, _, hasVM := r.fam.Killable(); hasVM || name == "Services Windows" || name == "BORJ" {
 					m.sayBad("Mode éco non autorisé sur " + name)
 					break
 				}
@@ -548,6 +594,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.hBusy = true
 			cmds = append(cmds, loadHealth())
 		}
+		if !m.volBusy && time.Since(m.volAt) > 30*time.Second {
+			m.volBusy = true
+			cmds = append(cmds, loadVolumes())
+		}
 		if vboxManage != "" && !m.vmBusy && time.Since(m.vmAt) > 15*time.Second {
 			m.vmBusy = true
 			cmds = append(cmds, loadVMs())
@@ -559,6 +609,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.h != nil {
 			m.health = msg.h
 		}
+
+	case volMsg:
+		m.vols, m.volBusy, m.volAt = msg, false, time.Now()
 
 	case vmListMsg:
 		m.vmBusy, m.vmErr, m.vmAt = false, msg.err, time.Now()
@@ -607,6 +660,7 @@ func main() {
 		eco:      map[string]bool{},
 		ecoDone:  map[uint32]bool{},
 		rec:      newRecorder(),
+		dry:      *once,
 	}
 	m.sample()
 	time.Sleep(500 * time.Millisecond)
@@ -616,6 +670,7 @@ func main() {
 		m.width, m.height, m.tab = *w, *h, *tab-1
 		m.health, m.hErr = collectHealth()
 		m.hBusy = false
+		m.vols = listVolumes()
 		if vboxManage != "" {
 			m.vms, m.vmErr = listVMs()
 		}

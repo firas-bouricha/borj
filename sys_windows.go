@@ -78,7 +78,7 @@ type powerThrottling struct {
 }
 
 var (
-	procGetPerformanceInfo   = windows.NewLazySystemDLL("psapi.dll").NewProc("GetPerformanceInfo")
+	procGetPerformanceInfo    = windows.NewLazySystemDLL("psapi.dll").NewProc("GetPerformanceInfo")
 	procSetProcessInformation = windows.NewLazySystemDLL("kernel32.dll").NewProc("SetProcessInformation")
 )
 
@@ -204,25 +204,129 @@ func netTotals() (rx, tx uint64) {
 	return rx, tx
 }
 
+// ---------- Volumes ----------
+
+type Volume struct {
+	Root  string // "C:\"
+	Label string
+	FS    string
+	Kind  uint32 // DRIVE_FIXED, DRIVE_REMOVABLE, DRIVE_REMOTE...
+	Total uint64
+	Free  uint64
+}
+
+func (v Volume) UsedPct() float64 {
+	if v.Total == 0 {
+		return 0
+	}
+	return 100 * float64(v.Total-v.Free) / float64(v.Total)
+}
+
+// listVolumes : volumes montés (fixes, amovibles, réseau, RAM disk), lecteurs optiques ignorés.
+// Chaque lecture a un délai max : un lecteur réseau déconnecté peut bloquer plusieurs secondes.
+func listVolumes() []Volume {
+	buf := make([]uint16, 512)
+	n, err := windows.GetLogicalDriveStrings(uint32(len(buf)), &buf[0])
+	if err != nil || n == 0 {
+		return nil
+	}
+	// liste "C:\␀D:\␀␀" : on découpe sur chaque NUL
+	var roots []string
+	start := 0
+	for i := 0; i < int(n); i++ {
+		if buf[i] == 0 {
+			if i > start {
+				roots = append(roots, windows.UTF16ToString(buf[start:i]))
+			}
+			start = i + 1
+		}
+	}
+
+	out := make([]Volume, 0, len(roots))
+	for _, root := range roots {
+		p, _ := windows.UTF16PtrFromString(root)
+		kind := windows.GetDriveType(p)
+		if kind == windows.DRIVE_CDROM || kind == windows.DRIVE_NO_ROOT_DIR || kind == windows.DRIVE_UNKNOWN {
+			continue
+		}
+		res := make(chan Volume, 1)
+		go func(root string, p *uint16, kind uint32) {
+			v := Volume{Root: root, Kind: kind}
+			var avail, total, free uint64
+			if windows.GetDiskFreeSpaceEx(p, &avail, &total, &free) != nil {
+				res <- Volume{}
+				return
+			}
+			v.Total, v.Free = total, free
+			label := make([]uint16, 261)
+			fs := make([]uint16, 261)
+			if windows.GetVolumeInformation(p, &label[0], uint32(len(label)), nil, nil, nil, &fs[0], uint32(len(fs))) == nil {
+				v.Label, v.FS = windows.UTF16ToString(label), windows.UTF16ToString(fs)
+			}
+			res <- v
+		}(root, p, kind)
+		select {
+		case v := <-res:
+			if v.Total > 0 {
+				out = append(out, v)
+			}
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return out
+}
+
+func init() {
+	// pas de boîte "Insérez un disque" sur un lecteur amovible vide
+	windows.SetErrorMode(windows.SEM_FAILCRITICALERRORS | windows.SEM_NOOPENFILEERRORBOX)
+}
+
 // ---------- Actions ----------
 
-// Processus qu'on refuse de tuer ou de brider (stabilité de Windows).
+// Processus qu'on refuse d'arrêter ou de brider : les tuer peut planter Windows (écran bleu),
+// fermer la session, ou corrompre une installation / mise à jour en cours.
 var protected = map[string]bool{
 	"system": true, "registry": true, "smss": true, "csrss": true, "wininit": true, "winlogon": true,
-	"services": true, "lsass": true, "svchost": true, "dwm": true, "memory compression": true,
-	"secure system": true, "fontdrvhost": true, "lsaiso": true, "borj": true,
+	"services": true, "lsass": true, "lsaiso": true, "svchost": true, "dwm": true, "memory compression": true,
+	"secure system": true, "fontdrvhost": true, "sihost": true, "ctfmon": true, "logonui": true,
+	"trustedinstaller": true, "tiworker": true, "msiexec": true, "wuauclt": true, "musnotification": true,
+	"msmpeng": true, "nissrv": true, "securityhealthservice": true, "smartscreen": true,
+	"spoolsv": true, "audiodg": true, "conhost": true, "borj": true,
+}
+
+// Processus de VM : les arrêter = couper le courant de la VM (risque de corruption du disque virtuel).
+// Ils se pilotent depuis l'onglet Machines virtuelles.
+var vmProcs = map[string]bool{
+	"virtualboxvm": true, "vboxheadless": true, "vboxsvc": true, "vboxsds": true,
+	"vmmem": true, "vmmemwsl": true, "vmwp": true, "vmcompute": true, "vmms": true,
 }
 
 func isProtected(name string) bool { return protected[strings.ToLower(name)] }
+func isVMProc(name string) bool    { return vmProcs[strings.ToLower(name)] }
 
-func killPIDs(pids []uint32) (ok, fail int) {
-	for _, pid := range pids {
-		h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, pid)
+// procRef : un PID + son heure de création, pour ne jamais viser un PID réutilisé par un autre programme.
+type procRef struct {
+	PID    uint32
+	Create int64
+}
+
+func creationTime(h windows.Handle) int64 {
+	var c, e, k, u windows.Filetime
+	if windows.GetProcessTimes(h, &c, &e, &k, &u) != nil {
+		return -1
+	}
+	return int64(c.HighDateTime)<<32 | int64(c.LowDateTime)
+}
+
+// killProcs : arrête chaque processus seulement s'il s'agit toujours du même (heure de création identique).
+func killProcs(refs []procRef) (ok, fail int) {
+	for _, r := range refs {
+		h, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, r.PID)
 		if err != nil {
 			fail++
 			continue
 		}
-		if windows.TerminateProcess(h, 1) == nil {
+		if creationTime(h) == r.Create && windows.TerminateProcess(h, 1) == nil {
 			ok++
 		} else {
 			fail++
@@ -232,18 +336,35 @@ func killPIDs(pids []uint32) (ok, fail int) {
 	return
 }
 
-// setEco active/désactive EcoQoS + priorité basse sur un processus.
+var (
+	procGetPriorityClass = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetPriorityClass")
+	origPriority         = map[uint32]uint32{} // priorité d'origine, restaurée quand le mode éco est retiré
+)
+
+// setEco active/désactive EcoQoS + priorité basse, et rend l'état d'origine à la désactivation.
 func setEco(pid uint32, on bool) error {
-	h, err := windows.OpenProcess(windows.PROCESS_SET_INFORMATION, false, pid)
+	h, err := windows.OpenProcess(windows.PROCESS_SET_INFORMATION|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
 		return err
 	}
 	defer windows.CloseHandle(h)
-	st := powerThrottling{Version: 1, ControlMask: 1}
-	prio := uint32(windows.NORMAL_PRIORITY_CLASS)
+
+	// on : EcoQoS forcé. off : ControlMask 0 = Windows reprend la main (comportement par défaut).
+	st := powerThrottling{Version: 1}
+	prio := uint32(windows.BELOW_NORMAL_PRIORITY_CLASS)
 	if on {
-		st.StateMask = 1
-		prio = windows.BELOW_NORMAL_PRIORITY_CLASS
+		st.ControlMask, st.StateMask = 1, 1
+		if _, seen := origPriority[pid]; !seen {
+			if p, _, _ := procGetPriorityClass.Call(uintptr(h)); p != 0 {
+				origPriority[pid] = uint32(p)
+			}
+		}
+	} else {
+		prio = windows.NORMAL_PRIORITY_CLASS
+		if p, seen := origPriority[pid]; seen {
+			prio = p
+			delete(origPriority, pid)
+		}
 	}
 	const processPowerThrottling = 4
 	if r, _, e := procSetProcessInformation.Call(uintptr(h), processPowerThrottling, uintptr(unsafe.Pointer(&st)), unsafe.Sizeof(st)); r == 0 {
@@ -256,6 +377,7 @@ func setEco(pid uint32, on bool) error {
 
 type Member struct {
 	PID     uint32
+	Create  int64
 	Name    string
 	Private uint64
 	CPU     float64
@@ -271,12 +393,20 @@ type Family struct {
 	Members []Member
 }
 
-func (f Family) PIDs() []uint32 {
-	out := make([]uint32, len(f.Members))
-	for i, m := range f.Members {
-		out[i] = m.PID
+// Killable : processus de la famille qu'on a le droit d'arrêter (hors système et VMs).
+func (f Family) Killable() (refs []procRef, skipped int, hasVM bool) {
+	for _, m := range f.Members {
+		switch {
+		case isVMProc(m.Name):
+			hasVM = true
+			skipped++
+		case isProtected(m.Name):
+			skipped++
+		default:
+			refs = append(refs, procRef{m.PID, m.Create})
+		}
 	}
-	return out
+	return
 }
 
 type Snapshot struct {
@@ -312,12 +442,12 @@ func (s Snapshot) CommitPct() float64 {
 type procKey struct{ create, cpu, read, write int64 }
 
 type Sampler struct {
-	prevCores    []corePerf
-	prevProc     map[uint32]procKey
-	prevAt       time.Time
-	prevRx       uint64
-	prevTx       uint64
-	ncpu         int
+	prevCores []corePerf
+	prevProc  map[uint32]procKey
+	prevAt    time.Time
+	prevRx    uint64
+	prevTx    uint64
+	ncpu      int
 }
 
 func NewSampler() *Sampler { return &Sampler{prevProc: map[uint32]procKey{}, ncpu: runtime.NumCPU()} }
@@ -469,7 +599,7 @@ func groupFamilies(procs []Proc, cpu, io map[uint32]float64) []Family {
 		f.Private += p.Private
 		f.CPU += cpu[p.PID]
 		f.IO += io[p.PID]
-		f.Members = append(f.Members, Member{PID: p.PID, Name: p.Name, Private: p.Private, CPU: cpu[p.PID], IO: io[p.PID]})
+		f.Members = append(f.Members, Member{PID: p.PID, Create: p.Create, Name: p.Name, Private: p.Private, CPU: cpu[p.PID], IO: io[p.PID]})
 	}
 	out := make([]Family, 0, len(agg))
 	for _, f := range agg {

@@ -522,11 +522,46 @@ func (m model) ssdCard(w int) (string, lipgloss.Color, []string) {
 			lines = append(lines, kv("  Usure", sDim.Render("non fournie par ce disque")))
 		}
 	}
-	lines = append(lines,
-		kv("Espace "+h.Sys.Drive, bar(h.Sys.UsedPct, inner-11-5)),
-		kv("", fg(levelColor(h.Sys.UsedPct)).Render(fmt.Sprintf("%.0f Go libres", h.Sys.FreeGB))))
+	lines = append(lines, m.volumeLines(inner)...)
 	v, c := verdict(worst)
 	return v, c, lines
+}
+
+// volColor : orange au-dessus de 85 %, rouge au-dessus de 95 %
+func volColor(p float64) lipgloss.Color {
+	switch {
+	case p >= 95:
+		return cBad
+	case p >= 85:
+		return cOrange
+	}
+	return cOK
+}
+
+func (m model) volumeLines(inner int) []string {
+	if len(m.vols) == 0 {
+		return []string{kv("Volumes", sDim.Render("lecture…"))}
+	}
+	lines := []string{sDim.Render("Volumes")}
+	for _, v := range m.vols {
+		name := strings.TrimSuffix(v.Root, `\`)
+		tag := ""
+		switch v.Kind {
+		case windows.DRIVE_REMOVABLE:
+			tag = " USB"
+		case windows.DRIVE_REMOTE:
+			tag = " réseau"
+		}
+		label := v.Label
+		if label == "" {
+			label = v.FS
+		}
+		p := v.UsedPct()
+		free := fmt.Sprintf(" %3.0f%% · %s libres", p, gb(v.Free))
+		bw := max(5, inner-11-lipgloss.Width(free))
+		lines = append(lines, sDim.Render(pad(name+" "+trunc(label+tag, 7), 11))+gbar(p, bw, 100, free, volColor(p)))
+	}
+	return lines
 }
 
 func (m model) cpuCard(w int) (string, lipgloss.Color, []string) {

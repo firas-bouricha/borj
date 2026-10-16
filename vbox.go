@@ -26,13 +26,17 @@ type VM struct {
 func (v VM) Running() bool { return v.State == "running" }
 func (v VM) Paused() bool  { return v.State == "paused" }
 
+// vboxManage : seulement dans le dossier d'installation de VirtualBox (variable posée par son
+// installeur, sinon Program Files). Jamais via le PATH, pour éviter un exécutable usurpé.
 var vboxManage = func() string {
-	p := filepath.Join(os.Getenv("ProgramFiles"), "Oracle", "VirtualBox", "VBoxManage.exe")
-	if _, err := os.Stat(p); err == nil {
-		return p
-	}
-	if p, err := exec.LookPath("VBoxManage.exe"); err == nil {
-		return p
+	for _, dir := range []string{os.Getenv("VBOX_MSI_INSTALL_PATH"), filepath.Join(os.Getenv("ProgramFiles"), "Oracle", "VirtualBox")} {
+		if dir == "" {
+			continue
+		}
+		p := filepath.Join(dir, "VBoxManage.exe")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
 	}
 	return ""
 }()
